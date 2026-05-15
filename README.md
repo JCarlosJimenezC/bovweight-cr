@@ -1,58 +1,290 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# BovWeight CR
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Proyecto Laravel para el curso IF7100 - Ingenieria del Software I de la UCR. El dominio del sistema modela un escenario de estimacion de peso bovino sobre Rancho, Animal y RegistroPeso, y el laboratorio documenta la aplicacion de los patrones Factory Method, Repository, Observer y Strategy.
 
-## About Laravel
+## Contexto Del Problema
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+Antes de aplicar patrones, el codigo presentaba estos dolores de mantenimiento:
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+| Patron | Problema sin patron | Sintoma observable | Consecuencia a largo plazo |
+| --- | --- | --- | --- |
+| Factory | `new Brahman()` y `new Nelore()` dispersos | Cambiar la creacion obliga a tocar varios clientes | Agregar razas nuevas rompe muchos puntos |
+| Repository | Consultas Eloquent mezcladas con servicios | Cambiar ORM o agregar cache obliga a reescribir logica | La capa de negocio queda acoplada a persistencia |
+| Observer | El registro de peso llama directamente a varios efectos secundarios | Cada nuevo suscriptor obliga a abrir el flujo central | El metodo crece y se acopla con subsistemas externos |
+| Strategy | Los algoritmos de estimacion viven en `if/elseif` | Agregar un algoritmo obliga a abrir el servicio orquestador | Se mezcla seleccion de algoritmo con flujo de negocio |
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Base Del Proyecto
 
-## Learning Laravel
+- Base de datos: SQLite configurada en `.env`.
+- Archivo de base: `database/database.sqlite`.
+- Migraciones del dominio ejecutadas para:
+	- `ranchos`
+	- `animals`
+	- `registro_pesos`
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+## Modelo De Dominio
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+- Rancho: nombre, ubicacion, propietario.
+- Animal: arete unico, rancho, raza, sexo, fecha de nacimiento.
+- RegistroPeso: animal, peso, confianza, metodo usado, fecha de registro.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+Relaciones:
 
-## Agentic Development
+- Rancho tiene muchos Animal.
+- Animal pertenece a Rancho y tiene muchos RegistroPeso.
+- RegistroPeso pertenece a Animal.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Patron 1 - Factory Method
 
-```bash
-composer require laravel/boost --dev
+Problema resuelto:
 
-php artisan boost:install
+- La creacion de razas ya no queda dispersa en controladores ni servicios.
+- El cliente depende de `IRazaFactory` y no de `new Brahman()` o `new Nelore()`.
+
+Implementacion:
+
+- Interfaz: `app/Domain/Factories/IRazaFactory.php`
+- Fabrica concreta: `app/Domain/Factories/RazaFactory.php`
+- Producto abstracto: `app/Domain/Models/Raza.php`
+- Productos concretos:
+	- `app/Domain/Models/Brahman.php`
+	- `app/Domain/Models/Nelore.php`
+- Registro en contenedor: `app/Providers/AppServiceProvider.php`
+
+Puntos de uso refactorizados:
+
+- `app/Http/Controllers/RazaTestController.php`
+- `app/Http/Controllers/AnimalSeederController.php`
+
+Como se prueba:
+
+- Ruta: `/probar-razas`
+- Devuelve datos de Brahman y Nelore creados a traves de la factory.
+
+Extensibilidad:
+
+- Para agregar Angus se crea `Angus.php` y se agrega una linea al arreglo interno de `RazaFactory`.
+
+## Patron 2 - Repository
+
+Problema resuelto:
+
+- Los servicios ya no dependen de consultas Eloquent embebidas.
+- La persistencia queda encapsulada detras de una interfaz de dominio.
+
+Implementacion:
+
+- Interfaz: `app/Domain/Repositories/IAnimalRepository.php`
+- Implementacion Eloquent: `app/Infrastructure/Persistence/EloquentAnimalRepository.php`
+- Implementacion en memoria: `app/Infrastructure/Persistence/InMemoryAnimalRepository.php`
+- Binding del contenedor: `app/Providers/AppServiceProvider.php`
+- Consumidor principal: `app/Services/ReporteService.php`
+
+Como se prueba:
+
+- Ruta: `/sembrar-animales`
+- Ruta: `/reporte-rancho/{ranchoId}`
+
+Resultado observado:
+
+- La siembra crea un rancho y tres animales.
+- El reporte usa solo `IAnimalRepository` para obtener animales por rancho y calcular peso promedio del ultimo registro.
+
+## Patron 3 - Observer
+
+Problema resuelto:
+
+- El registro de peso ya no conoce directamente a todos los receptores de efectos secundarios.
+- Agregar un nuevo observador no obliga a cambiar el sujeto.
+
+Implementacion:
+
+- Interfaz: `app/Domain/Observers/IRegistroPesoObserver.php`
+- Subject: `app/Domain/Observers/RegistroPesoSubject.php`
+- Observadores:
+	- `app/Domain/Observers/NotificadorPropietario.php`
+	- `app/Domain/Observers/RecalculadorICC.php`
+	- `app/Domain/Observers/WebhookSenasa.php`
+	- `app/Domain/Observers/AlertaSMS.php`
+- Servicio de orquestacion: `app/Services/RegistroPesoService.php`
+- Controlador: `app/Http/Controllers/RegistroPesoController.php`
+- Test unitario: `tests/Unit/RegistroPesoSubjectTest.php`
+
+Como se prueba:
+
+- Test: `php artisan test --filter=RegistroPesoSubjectTest`
+- Ruta: `/registrar-peso`
+
+Evidencia en log:
+
+- Email al propietario.
+- Recalculo de ICC.
+- Webhook a SENASA.
+- SMS de alerta.
+
+Demostracion de Open/Closed:
+
+- `AlertaSMS` se agrego sin modificar `RegistroPesoSubject` ni los observadores previos.
+
+## Patron 4 - Strategy
+
+Problema resuelto:
+
+- La seleccion del algoritmo ya no vive en `if/elseif` dentro del servicio estimador.
+- El contexto delega a una estrategia intercambiable en tiempo de ejecucion.
+
+Implementacion:
+
+- Value object inmutable: `app/Domain/ValueObjects/ResultadoEstimacion.php`
+- Interfaz: `app/Domain/Strategies/IAlgoritmoEstimacion.php`
+- Excepcion de dominio: `app/Domain/Exceptions/ServicioYolov8NoDisponibleException.php`
+- Estrategias concretas:
+	- `app/Domain/Strategies/AlgoritmoYolov8.php`
+	- `app/Domain/Strategies/AlgoritmoRegresionLineal.php`
+	- `app/Domain/Strategies/AlgoritmoTablaReferencia.php`
+- Contexto: `app/Services/EstimadorPesoService.php`
+- Controlador: `app/Http/Controllers/EstimacionController.php`
+
+Como se prueba:
+
+- `/estimar/yolov8`
+- `/estimar/regresion`
+- `/estimar/tabla`
+- `/estimar/fallback`
+
+Simulacion realista de YOLOv8:
+
+- Valida `imagen_url`.
+- Simula llamada HTTP a un endpoint configurable.
+- Simula latencia de red.
+- Calcula peso y confianza pseudo-deterministicos a partir de `crc32(imagen_url)`.
+- Registra logs de llamada, latencia y resultado.
+
+Cambio de estrategia en runtime:
+
+- `probarFallback()` intenta YOLOv8.
+- Si el algoritmo lanza `ServicioYolov8NoDisponibleException`, se cambia a `AlgoritmoTablaReferencia` usando el mismo `EstimadorPesoService`.
+
+## Evidencia De Ejecucion
+
+### Factory
+
+- `GET /probar-razas`
+- Devuelve Brahman y Nelore creados por `IRazaFactory`.
+
+### Repository
+
+- `GET /sembrar-animales`
+```json
+{
+	"mensaje": "Datos de prueba creados correctamente.",
+	"rancho_id": 1,
+	"animales_creados": 3
+}
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+- `GET /reporte-rancho/1`
+```json
+{
+	"rancho_id": 1,
+	"cantidad_animales": 3,
+	"peso_promedio_ultimo_registro_kg": 394.75
+}
+```
 
-## Contributing
+### Observer
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+- `GET /registrar-peso`
+```json
+{
+	"mensaje": "Registro de peso creado y observadores notificados."
+}
+```
 
-## Code of Conduct
+- Log esperado:
+	- `Email enviado al propietario del animal BWCR-1-001`
+	- `ICC recalculado para animal BWCR-1-001, peso 480 kg`
+	- `Webhook SENASA disparado para animal BWCR-1-001`
+	- `SMS de alerta enviado por peso de 480 kg`
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+### Strategy
 
-## Security Vulnerabilities
+- `GET /estimar/yolov8`
+```json
+{
+	"pesoKg": 389.09,
+	"confianzaPorcentaje": 91.99,
+	"metodoUsado": "yolov8"
+}
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+- `GET /estimar/regresion`
+```json
+{
+	"pesoKg": 482,
+	"confianzaPorcentaje": 78,
+	"metodoUsado": "regresion_lineal"
+}
+```
 
-## License
+- `GET /estimar/tabla`
+```json
+{
+	"pesoKg": 450,
+	"confianzaPorcentaje": 60,
+	"metodoUsado": "tabla_referencia"
+}
+```
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- `GET /estimar/fallback`
+```json
+{
+	"fallback_aplicado": true,
+	"resultado": {
+		"pesoKg": 450,
+		"confianzaPorcentaje": 60,
+		"metodoUsado": "tabla_referencia"
+	}
+}
+```
+
+Logs observados de YOLOv8:
+
+- Llamada al endpoint simulado.
+- Latencia simulada.
+- Resultado pseudo-deterministico.
+- Warning del fallback cuando el servicio se marca como no disponible.
+
+## Estructura Relevante
+
+```text
+app/
+	Domain/
+		Exceptions/
+		Factories/
+		Models/
+		Observers/
+		Repositories/
+		Strategies/
+		ValueObjects/
+	Http/Controllers/
+	Infrastructure/Persistence/
+	Models/
+	Providers/
+	Services/
+```
+
+## Comandos Utiles
+
+```bash
+php artisan migrate
+php artisan test --filter=RegistroPesoSubjectTest
+php artisan serve
+```
+
+## Estado De Entrega
+
+- SQLite configurado y operativo.
+- Migraciones del dominio ejecutadas.
+- Factory, Repository, Observer y Strategy implementados.
+- Validaciones manuales y pruebas ejecutadas durante la implementacion.
